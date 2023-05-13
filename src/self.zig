@@ -1,4 +1,4 @@
-// PS4 SELF Parser
+// PS4 SELF Parser (reconstructs the OELF from the SELF file)
 //
 // OrbisEmu is an experimental PS4 GPU Emulator and Orbis compatibility layer for the Windows and Linux operating systems under the x86_64 CPU architecture.
 // Copyright (C) 2023  John Clemis
@@ -47,89 +47,12 @@ pub const Entry = extern struct {
     memsz: u64,
 };
 
-pub const ElfHeader = extern struct {
-    ident: [elf.EI_NIDENT]u8,
-    type: u16,
-    machine: u16,
-    version: u32,
-    entry: u64,
-    phoff: u64,
-    shoff: u64,
-    flags: u32,
-    ehsize: u16,
-    phentsize: u16,
-    phnum: u16,
-    shentsize: u16,
-    shnum: u16,
-    shstrndx: u16,
+pub const ParseError = error{
+    InvalidFakeSelf,
 };
 
-pub const ExtendedInfo = extern struct {
-    paid: u64,
-    ptype: u64,
-    app_version: u64,
-    fw_version: u64,
-    digest: [32]u8,
-};
-
-pub const NpdrmControlBlock = extern struct {
-    type: u16,
-    _pad0: [14]u8,
-    content_id: [19]u8,
-    random_pad: [13]u8,
-};
-
-pub const MetaBlock = extern struct {
-    unk: [80]u8,
-};
-
-pub const MetaFooter = extern struct {
-    unk0: [48]u8,
-    unk1: u32,
-    unk2: [28]u8,
-};
-
-pub const Signature = [16]u8;
-
-pub const Data = struct {
-    allocator: std.mem.Allocator,
-
-    common_header: CommonHeader,
-    extended_header: ExtendedHeader,
-
-    elf_offset: u64,
-
-    entries: []Entry,
-
-    elf_header: ElfHeader,
-    program_headers: []elf.Elf64_Phdr,
-
-    extended_info: ExtendedInfo,
-    npdrm_control_block: NpdrmControlBlock,
-
-    meta_blocks: []MetaBlock,
-    meta_footer: MetaFooter,
-
-    signature: Signature,
-
-    dynamic_entries: []elf.Elf64_Dyn,
-    rela_entries: []elf.Elf64_Rela,
-
-    pub fn deinit(self: *Data) void {
-        self.allocator.free(self.entries);
-        self.allocator.free(self.program_headers);
-        self.allocator.free(self.meta_blocks);
-        self.allocator.free(self.dynamic_entries);
-        self.allocator.free(self.rela_entries);
-    }
-};
-
-pub const ParseError = error {
-    NotFakeSelf,
-};
-
-/// Parse a data stream with a SeekableStream and a Reader into a Data struct that contains all of the information from the SELF file.
-pub fn parse(stream: anytype, allocator: std.mem.Allocator) !Data {
+/// Parses the SELF and returns the reconstructed OELF.
+pub fn toOElf(stream: anytype, allocator: std.mem.Allocator) ![]u8 {
     const StreamType = @TypeOf(stream);
 
     comptime {
@@ -137,82 +60,61 @@ pub fn parse(stream: anytype, allocator: std.mem.Allocator) !Data {
         std.debug.assert(@hasDecl(StreamType, "reader"));
     }
 
-    var data: Data = undefined;
-    data.allocator = allocator;
+    try stream.seekableStream().seekTo(try stream.seekableStream().getEndPos());
+    const self_size = try stream.seekableStream().getPos();
+    try stream.seekableStream().seekTo(0);
 
-    data.common_header = try stream.reader().readStruct(CommonHeader);
-    data.extended_header = try stream.reader().readStruct(ExtendedHeader);
-
-    data.entries = try allocator.alloc(Entry, data.extended_header.num_entries);
-    errdefer allocator.free(data.entries);
-
-    for (data.entries) |*entry| {
-        entry.* = try stream.reader().readStruct(Entry);
+    const common_header = try stream.reader().readStruct(CommonHeader);
+    if (!std.mem.eql(u8, &common_header.magic, &[4]u8 { 79, 21, 61, 29 })) {
+        return ParseError.InvalidFakeSelf;
     }
+    const extended_header = try stream.reader().readStruct(ExtendedHeader);
+    const entries_offset = try stream.seekableStream().getPos();
+    try stream.seekableStream().seekBy(extended_header.num_entries * @sizeOf(Entry));
 
-    data.elf_offset = try stream.seekableStream().getPos();
-    var elf_stream = stream_util.OffsetStream(@TypeOf(stream)) { 
-        .stream = stream, 
-        .offset = data.elf_offset,
-    };
+    const elf_offset = try stream.seekableStream().getPos();
+    const elf_stream = stream_util.OffsetStream(StreamType){ .stream = stream, .offset = elf_offset };
 
-    data.elf_header = try stream.reader().readStruct(ElfHeader);
-    const header_parser = try elf.Header.parse(std.mem.asBytes(&data.elf_header));
+    const elf_header = try elf.Header.read(elf_stream);
 
-    var program_header_iter = header_parser.program_header_iterator(elf_stream);
+    var program_header_iter = elf_header.program_header_iterator(elf_stream);
 
-    data.program_headers = try allocator.alloc(elf.Elf64_Phdr, data.elf_header.phnum);
-    errdefer allocator.free(data.program_headers);
+    var min_offset: u64 = std.math.maxInt(u64);
+    var elf_size: u64 = 0;
 
-    data.rela_entries = try allocator.alloc(elf.Elf64_Rela, data.elf_header.phnum);
-    data.rela_entries.len = 0;
-    errdefer allocator.free(data.rela_entries);
-
-    var found_dynamic: bool = false;
-    for (data.program_headers) |*header| {
-        header.* = (try program_header_iter.next()).?;
-
-        if (header.p_type == elf.PT_DYNAMIC) {
-            std.debug.assert(!found_dynamic);
-            found_dynamic = true;
-
-            try elf_stream.seekableStream().seekTo(header.p_offset);
-            data.dynamic_entries = try allocator.alloc(elf.Elf64_Dyn, header.p_filesz / @sizeOf(elf.Elf64_Dyn));
-            errdefer allocator.free(data.dynamic_entries);
-            for (data.dynamic_entries) |*entry| {
-                entry.* = try elf_stream.reader().readStruct(elf.Elf64_Dyn);
-            }
+    while (try program_header_iter.next()) |segment| {
+        if (segment.p_offset != 0) {
+            min_offset = @min(min_offset, segment.p_offset);
         }
+        elf_size = @max(segment.p_offset + segment.p_filesz, elf_size);
     }
 
-    const elf_end_pos = std.mem.alignForward(@max(data.elf_header.ehsize, data.elf_header.phoff + (data.elf_header.phentsize * data.elf_header.phnum)), 16);
-    try elf_stream.seekableStream().seekTo(elf_end_pos);
-
-    data.extended_info = try stream.reader().readStruct(ExtendedInfo);
-
-    // We can only parse fake SELFs because we cannot decrypt actual PS4 SELFs. 
-    // Perhaps some day it will possible to dump the keys required from the PS4, 
-    // then we could potentially use dumped libraries from the Kernel for the ones that are LLEable,
-    // instead of HLEing them by reimplementation. Kind of like what RPCS3 does!
-    if (data.extended_info.ptype != PTYPE_FAKE) {
-        return ParseError.NotFakeSelf;
+    if (min_offset == std.math.maxInt(u64)) {
+        min_offset = 0;
     }
+    min_offset = @min(min_offset, @max(self_size, elf_offset) - elf_offset);
 
-    data.npdrm_control_block = try stream.reader().readStruct(NpdrmControlBlock);
+    var elf_data: []u8 = try allocator.alloc(u8, elf_size);
+    errdefer allocator.free(elf_data);
 
-    data.meta_blocks = try allocator.alloc(MetaBlock, data.extended_header.num_entries);
-    errdefer allocator.free(data.meta_blocks);
+    try stream.seekableStream().seekTo(elf_offset);
+    try stream.reader().readNoEof(elf_data[0..min_offset]);
 
-    for (data.meta_blocks) |*block| {
-        block.* = try stream.reader().readStruct(MetaBlock);
+    var entry_index: usize = 0;
+    while (entry_index < extended_header.num_entries) {
+        try stream.seekableStream().seekTo(entries_offset + (entry_index * @sizeOf(Entry)));
+        const entry = try stream.reader().readStruct(Entry);
+
+        if (entry.props & SF_BFLG > 0) {
+            const program_header_index = @truncate(u12, entry.props >> 20);
+            const program_header = std.mem.bytesToValue(elf.Elf64_Phdr, elf_data[elf_header.phoff + (program_header_index * @sizeOf(elf.Elf64_Phdr)) ..][0..@sizeOf(elf.Elf64_Phdr)]);
+
+            try stream.seekableStream().seekTo(entry.offset);
+            try stream.reader().readNoEof(elf_data[program_header.p_offset..][0..entry.filesz]);
+        }
+        entry_index += 1;
     }
-
-    data.meta_footer = try stream.reader().readStruct(MetaFooter);
-    data.signature = try stream.reader().readBytesNoEof(@typeInfo(Signature).Array.len);
-
-    return data;
+    return elf_data;
 }
 
-pub const PTYPE_FAKE = 0x1;
-
-
+pub const SF_BFLG = 0x800;

@@ -20,39 +20,29 @@ const std = @import("std");
 const root = @import("root");
 const stream_util = root.stream_util;
 
+const oelf = @import("oelf.zig");
 const self = @import("self.zig");
 
-pub const Module = struct {
-
-};
+pub const Module = struct {};
 
 pub fn load(stream: anytype, allocator: std.mem.Allocator) !Module {
+    const StreamType = @TypeOf(stream);
+
+    comptime {
+        std.debug.assert(@hasDecl(StreamType, "seekableStream"));
+        std.debug.assert(@hasDecl(StreamType, "reader"));
+    }
+
     var mod: Module = undefined;
 
-    var self_data = try self.parse(stream, allocator);
-    defer self_data.deinit();
+    var elf_data = try oelf.parse(try self.toOElf(stream, allocator), allocator);
+    defer elf_data.deinit();
 
-    var elf_stream = stream_util.OffsetStream(@TypeOf(stream)) {
-        .stream = stream,
-        .offset = self_data.elf_offset,
-    };
-    _ = elf_stream;
+    std.log.info("{any}", .{elf_data.header});
 
-    std.log.info("{any}", .{self_data.common_header});
-    std.log.info("{any}", .{self_data.extended_header});
-
-    for (self_data.entries) |header| {
+    for (elf_data.program_headers) |header| {
         std.log.info("{any}", .{header});
     }
-
-    std.log.info("{any}", .{self_data.elf_header});
-
-    for (self_data.program_headers) |header| {
-        std.log.info("{any}", .{header});
-    }
-
-    std.log.info("{any}", .{self_data.extended_info});
-    std.log.info("{any}", .{self_data.npdrm_control_block});
 
     return mod;
 }

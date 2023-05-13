@@ -63,6 +63,7 @@ pub fn main() !u8 {
 
         if (run_cmd_args.valueOf("path")) |path| {
             var file = try std.fs.cwd().openFile(path, .{ .mode = .read_only });
+            errdefer file.close();
             var main_module = try module_loader.load(file, default_allocator);
             _ = main_module;
             file.close();

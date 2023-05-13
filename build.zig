@@ -1,4 +1,4 @@
-// OrbisEmu is an experimental PS4 GPU Emulator and Orbis compatibility layer for Windows and Linux operating systems under the x86_64 CPU architecture.
+// OrbisEmu is an experimental PS4 GPU Emulator and Orbis compatibility layer for the Windows and Linux operating systems under the x86_64 CPU architecture.
 // Copyright (C) 2023  John Clemis
 //
 // This program is free software: you can redistribute it and/or modify

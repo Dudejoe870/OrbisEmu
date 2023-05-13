@@ -23,13 +23,8 @@ pub fn OffsetStream(comptime StreamType: type) type {
     return struct {
         const Self = @This();
 
-        pub const SeekableStream = std.io.SeekableStream(Self, 
-            StreamType.SeekableStream.SeekError, StreamType.SeekableStream.GetSeekPosError, 
-            seekTo, 
-            seekBy, 
-            getPos, 
-            getEndPos);
-        
+        pub const SeekableStream = std.io.SeekableStream(Self, StreamType.SeekableStream.SeekError, StreamType.SeekableStream.GetSeekPosError, seekTo, seekBy, getPos, getEndPos);
+
         pub const Reader = StreamType.Reader;
 
         stream: StreamType,
