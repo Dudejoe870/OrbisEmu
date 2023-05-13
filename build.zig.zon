@@ -1,0 +1,11 @@
+.{
+    .name = "orbisemu",
+    .version = "0.0.0",
+
+    .dependencies = .{
+        .yazap = .{
+            .url = "https://github.com/PrajwalCH/yazap/archive/7b5242f88c6aa6d6a8fa53c00ce0c8e991252f7e.tar.gz",
+            .hash = "1220049adea3fcc63cb65a4b899d91796fa3ef943ea37d33aa9a07ca2d8c228067ac",
+        },
+    },
+}
