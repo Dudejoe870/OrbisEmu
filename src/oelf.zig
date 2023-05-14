@@ -38,38 +38,107 @@ pub const Header = extern struct {
     shstrndx: u16,
 };
 
+pub const ModuleReference = struct {
+    name: []const u8,
+    value: packed union {
+        int: u64,
+        bits: packed struct {
+            name_offset: u32,
+            version_minor: u8,
+            version_major: u8,
+            id: u16,
+        },
+    },
+};
+
+pub const LibraryReference = struct {
+    name: []const u8,
+    value: packed union {
+        int: u64,
+        bits: packed struct {
+            name_offset: u32,
+            version: u16,
+            id: u16,
+        },
+    },
+};
+
 pub const Data = struct {
     allocator: std.mem.Allocator,
     elf_data: []const u8,
 
-    header: Header,
-    program_headers: []const elf.Elf64_Phdr,
+    header: *const Header = undefined,
+    program_headers: []const elf.Elf64_Phdr = undefined,
 
-    dynamic_entries: []const elf.Elf64_Dyn,
+    dynamic_entries: []const elf.Elf64_Dyn = undefined,
 
-    rela_entries: ?[]const elf.Elf64_Rela,
-    plt_rela_entries: ?[]const elf.Elf64_Rela,
+    symbol_table: []const elf.Elf64_Sym = undefined,
+    string_table: []const u8 = undefined,
 
-    mapped_size: usize,
+    rela_entries: []const elf.Elf64_Rela = undefined,
+    plt_rela_entries: []const elf.Elf64_Rela = undefined,
+
+    needed_files: ?[]const []const u8 = null,
+
+    export_modules: ?[]const ModuleReference = null,
+    import_modules: ?[]const ModuleReference = null,
+
+    export_libraries: ?[]const LibraryReference = null,
+    import_libraries: ?[]const LibraryReference = null,
+
+    mapped_size: usize = 0,
 
     pub fn deinit(self: *Data) void {
+        if (self.needed_files) |files| self.allocator.free(files);
+
+        if (self.export_modules) |modules| self.allocator.free(modules);
+        if (self.import_modules) |modules| self.allocator.free(modules);
+
+        if (self.export_libraries) |libraries| self.allocator.free(libraries);
+        if (self.import_libraries) |libraries| self.allocator.free(libraries);
+
         self.allocator.free(self.elf_data);
+    }
+
+    pub fn getStringFromTable(self: *const Data, offset: u64) []const u8 {
+        std.debug.assert(offset != self.string_table.len - 1);
+        return std.mem.span(@ptrCast([*:0]const u8, self.string_table[offset..].ptr));
     }
 };
 
 pub const ParseError = error{
     MoreThanOneDynamicSection,
     CouldntFindDynamicSection,
+
     MoreThanOneRelaSzTag,
     CouldntFindRelaSzTag,
-    NothingToLoad,
+
     MoreThanOneDynlibData,
     CouldntFindDynlibData,
+
+    MoreThanOneSymTabTag,
+    CouldntFindSymTabTag,
+
+    MoreThanOneSymTabSzTag,
+    CouldntFindSymTabSzTag,
+
+    MoreThanOneStrTabTag,
+    CouldntFindStrTabTag,
+
+    MoreThanOneStrSzTag,
+    CouldntFindStrSzTag,
+
     MoreThanOneRelaTag,
+    CouldntFindRelaTag,
+
     MoreThanOneJmpRelTag,
+    CouldntFindJmpRelTag,
+
     MoreThanOnePltRelaSzTag,
-    NoRelocationTable,
+    CouldntFindPltRelaSzTag,
 };
+
+pub const ELF_MAGIC = [4]u8{ 0x7F, 'E', 'L', 'F' };
 
 inline fn isSegmentLoadable(segment: elf.Elf64_Phdr) bool {
     return segment.p_type == elf.PT_LOAD or segment.p_type == PT_SCE_RELRO;
@@ -79,7 +148,7 @@ inline fn sliceCast(comptime T: type, buffer: []const u8, offset: usize, count: 
     std.debug.assert(offset + count * @sizeOf(T) <= buffer.len);
 
     const ptr = @ptrToInt(buffer.ptr) + offset;
-    return @intToPtr([*]T, ptr)[0 .. count];
+    return @intToPtr([*]T, ptr)[0..count];
 }
 
 /// Parses a data buffer into a Data struct that contains all of the information from the OELF file.
@@ -88,106 +157,220 @@ inline fn sliceCast(comptime T: type, buffer: []const u8, offset: usize, count: 
 ///
 /// Allocator must be the same allocator used to allocate the slice.
 pub fn parse(oelf: []const u8, allocator: std.mem.Allocator) !Data {
-    var data: Data = undefined;
-    data.allocator = allocator;
-    data.elf_data = oelf;
+    var data = Data{
+        .allocator = allocator,
+        .elf_data = oelf,
+    };
     errdefer allocator.free(data.elf_data);
 
-    var stream = std.io.fixedBufferStream(oelf);
-
-    data.header = try stream.reader().readStruct(Header);
-    _ = try elf.Header.parse(std.mem.asBytes(&data.header));
+    data.header = std.mem.bytesAsValue(Header, @alignCast(@alignOf(Header), oelf[0..@sizeOf(Header)]));
+    _ = try elf.Header.parse(std.mem.asBytes(data.header));
 
     data.program_headers = sliceCast(elf.Elf64_Phdr, oelf, data.header.phoff, data.header.phnum);
 
-    data.mapped_size = 0;
-    var load_addr_begin: usize = 0;
-    var load_addr_end: usize = 0;
+    // Get all Dynamic Tables, compute the in-memory mapped and loaded size,
+    // and count the number of various other tags to know how much to allocate.
+    {
+        data.mapped_size = 0;
+        var load_addr_begin: usize = 0;
+        var load_addr_end: usize = 0;
 
-    var dynlib_data_offset: ?u64 = null;
+        var dynlib_data_offset: ?u64 = null;
 
-    var rela_table_offset: ?u64 = null;
-    var rela_table_size: ?u64 = null;
-    var plt_rela_table_offset: ?u64 = null;
-    var plt_rela_table_size: ?u64 = null;
+        var symbol_table_offset: ?u64 = null;
+        var symbol_table_size: ?u64 = null;
 
-    var found_dynamic: bool = false;
-    for (data.program_headers) |segment| {
-        if (isSegmentLoadable(segment)) {
-            if (segment.p_vaddr < load_addr_begin) {
-                load_addr_begin = segment.p_vaddr;
-            }
+        var string_table_offset: ?u64 = null;
+        var string_table_size: ?u64 = null;
 
-            const aligned_addr = std.mem.alignBackward(segment.p_vaddr + segment.p_memsz, segment.p_align);
-            if (aligned_addr > load_addr_end) {
-                load_addr_end = aligned_addr;
-            }
-        }
+        var rela_table_offset: ?u64 = null;
+        var rela_table_size: ?u64 = null;
+        var plt_rela_table_offset: ?u64 = null;
+        var plt_rela_table_size: ?u64 = null;
 
-        switch (segment.p_type) {
-            elf.PT_DYNAMIC => {
-                if (found_dynamic) return ParseError.MoreThanOneDynamicSection;
-                found_dynamic = true;
+        var num_needed_files: u64 = 0;
 
-                data.dynamic_entries = sliceCast(elf.Elf64_Dyn, oelf, segment.p_offset, segment.p_filesz / @sizeOf(elf.Elf64_Dyn));
+        var num_export_modules: u64 = 0;
+        var num_import_modules: u64 = 0;
 
-                for (data.dynamic_entries) |entry| {
-                    switch (entry.d_tag) {
-                        DT_SCE_RELA => {
-                            if (rela_table_offset != null) return ParseError.MoreThanOneRelaTag;
-                            rela_table_offset = entry.d_val;
-                        },
-                        DT_SCE_RELASZ => {
-                            if (rela_table_size != null) return ParseError.MoreThanOneRelaSzTag;
-                            rela_table_size = entry.d_val;
-                        },
-                        DT_SCE_JMPREL => {
-                            if (plt_rela_table_offset != null) return ParseError.MoreThanOneJmpRelTag;
-                            plt_rela_table_offset = entry.d_val;
-                        },
-                        DT_SCE_PLTRELSZ => {
-                            if (plt_rela_table_size != null) return ParseError.MoreThanOnePltRelaSzTag;
-                            plt_rela_table_size = entry.d_val;
-                        },
-                        else => continue,
-                    }
+        var num_export_libraries: u64 = 0;
+        var num_import_libraries: u64 = 0;
+
+        var found_dynamic: bool = false;
+        for (data.program_headers) |segment| {
+            if (isSegmentLoadable(segment)) {
+                if (segment.p_vaddr < load_addr_begin) {
+                    load_addr_begin = segment.p_vaddr;
                 }
-            },
-            PT_SCE_DYNLIBDATA => {
-                if (dynlib_data_offset != null) return ParseError.MoreThanOneDynlibData;
-                dynlib_data_offset = segment.p_offset;
-            },
-            else => continue,
+
+                const aligned_addr = std.mem.alignBackward(segment.p_vaddr + segment.p_memsz, segment.p_align);
+                if (aligned_addr > load_addr_end) {
+                    load_addr_end = aligned_addr;
+                }
+            }
+
+            switch (segment.p_type) {
+                elf.PT_DYNAMIC => {
+                    // In the first pass we prepare all the table offset and sizes.
+                    if (found_dynamic) return ParseError.MoreThanOneDynamicSection;
+                    found_dynamic = true;
+
+                    data.dynamic_entries = sliceCast(elf.Elf64_Dyn, oelf, segment.p_offset, segment.p_filesz / @sizeOf(elf.Elf64_Dyn));
+
+                    for (data.dynamic_entries) |entry| {
+                        switch (entry.d_tag) {
+                            // Symbol Table
+                            DT_SCE_SYMTAB => {
+                                if (symbol_table_offset != null) return ParseError.MoreThanOneSymTabTag;
+                                symbol_table_offset = entry.d_val;
+                            },
+                            DT_SCE_SYMTABSZ => {
+                                if (symbol_table_size != null) return ParseError.MoreThanOneSymTabSzTag;
+                                symbol_table_size = entry.d_val;
+                            },
+
+                            // String Table
+                            DT_SCE_STRTAB => {
+                                if (string_table_offset != null) return ParseError.MoreThanOneStrTabTag;
+                                string_table_offset = entry.d_val;
+                            },
+                            DT_SCE_STRSZ => {
+                                if (string_table_size != null) return ParseError.MoreThanOneStrSzTag;
+                                string_table_size = entry.d_val;
+                            },
+
+                            // Relocation Table
+                            DT_SCE_RELA => {
+                                if (rela_table_offset != null) return ParseError.MoreThanOneRelaTag;
+                                rela_table_offset = entry.d_val;
+                            },
+                            DT_SCE_RELASZ => {
+                                if (rela_table_size != null) return ParseError.MoreThanOneRelaSzTag;
+                                rela_table_size = entry.d_val;
+                            },
+
+                            // PLT Relocation Table
+                            DT_SCE_JMPREL => {
+                                if (plt_rela_table_offset != null) return ParseError.MoreThanOneJmpRelTag;
+                                plt_rela_table_offset = entry.d_val;
+                            },
+                            DT_SCE_PLTRELSZ => {
+                                if (plt_rela_table_size != null) return ParseError.MoreThanOnePltRelaSzTag;
+                                plt_rela_table_size = entry.d_val;
+                            },
+
+                            // Other Tags
+                            DT_NEEDED => {
+                                num_needed_files += 1;
+                            },
+                            DT_SCE_MODULE_INFO => {
+                                num_export_modules += 1;
+                            },
+                            DT_SCE_NEEDED_MODULE => {
+                                num_import_modules += 1;
+                            },
+                            DT_SCE_EXPORT_LIB => {
+                                num_export_libraries += 1;
+                            },
+                            DT_SCE_IMPORT_LIB => {
+                                num_import_libraries += 1;
+                            },
+                            else => continue,
+                        }
+                    }
+                },
+                PT_SCE_DYNLIBDATA => {
+                    if (dynlib_data_offset != null) return ParseError.MoreThanOneDynlibData;
+                    dynlib_data_offset = segment.p_offset;
+                },
+                else => continue,
+            }
         }
+        if (!found_dynamic) return ParseError.CouldntFindDynamicSection;
+
+        if (dynlib_data_offset == null) return ParseError.CouldntFindDynlibData;
+
+        if (symbol_table_offset == null) return ParseError.CouldntFindSymTabTag;
+        if (symbol_table_size == null) return ParseError.CouldntFindSymTabSzTag;
+
+        if (string_table_offset == null) return ParseError.CouldntFindStrTabTag;
+        if (string_table_size == null) return ParseError.CouldntFindStrSzTag;
+
+        if (rela_table_offset == null) return ParseError.CouldntFindRelaTag;
+        if (plt_rela_table_offset == null) return ParseError.CouldntFindJmpRelTag;
+        if (rela_table_size == null) return ParseError.CouldntFindRelaSzTag;
+        if (plt_rela_table_size == null) return ParseError.CouldntFindPltRelaSzTag;
+
+        data.mapped_size = load_addr_end - load_addr_begin;
+
+        data.symbol_table = sliceCast(elf.Elf64_Sym, oelf, dynlib_data_offset.? + symbol_table_offset.?, symbol_table_size.? / @sizeOf(elf.Elf64_Sym));
+        data.string_table = oelf[dynlib_data_offset.? + string_table_offset.? ..][0..string_table_size.?];
+
+        data.rela_entries = sliceCast(elf.Elf64_Rela, oelf, dynlib_data_offset.? + rela_table_offset.?, rela_table_size.? / @sizeOf(elf.Elf64_Rela));
+        data.plt_rela_entries = sliceCast(elf.Elf64_Rela, oelf, dynlib_data_offset.? + plt_rela_table_offset.?, plt_rela_table_size.? / @sizeOf(elf.Elf64_Rela));
+
+        if (num_needed_files > 0) data.needed_files = try allocator.alloc([]const u8, num_needed_files);
+
+        if (num_export_modules > 0) data.export_modules = try allocator.alloc(ModuleReference, num_export_modules);
+        if (num_import_modules > 0) data.import_modules = try allocator.alloc(ModuleReference, num_import_modules);
+
+        if (num_export_libraries > 0) data.export_libraries = try allocator.alloc(LibraryReference, num_export_libraries);
+        if (num_import_libraries > 0) data.import_libraries = try allocator.alloc(LibraryReference, num_import_libraries);
     }
-    if (!found_dynamic) return ParseError.CouldntFindDynamicSection;
 
-    if (dynlib_data_offset == null) return ParseError.CouldntFindDynlibData;
-
-    data.mapped_size = load_addr_end - load_addr_begin;
-    if (data.mapped_size == 0) return ParseError.NothingToLoad;
-
-    if (rela_table_offset == null and plt_rela_table_offset == null) {
-        return ParseError.NoRelocationTable;
-    }
-
-    data.rela_entries = null;
-    if (rela_table_size) |size| {
-        data.rela_entries = sliceCast(elf.Elf64_Rela, oelf, dynlib_data_offset.? + rela_table_offset.?, size / @sizeOf(elf.Elf64_Rela));
-    }
-
-    data.plt_rela_entries = null;
-    if (plt_rela_table_size) |size| {
-        data.plt_rela_entries = sliceCast(elf.Elf64_Rela, oelf, dynlib_data_offset.? + plt_rela_table_offset.?, size / @sizeOf(elf.Elf64_Rela));
+    // Parse the rest of the Dynamic Entries.
+    {
+        var needed_index: usize = 0;
+        var export_module_index: usize = 0;
+        var import_module_index: usize = 0;
+        var export_libraries_index: usize = 0;
+        var import_libraries_index: usize = 0;
+        for (data.dynamic_entries) |entry| {
+            switch (entry.d_tag) {
+                DT_NEEDED => {
+                    @constCast(data.needed_files.?)[needed_index] = data.getStringFromTable(entry.d_val);
+                    needed_index += 1;
+                },
+                DT_SCE_MODULE_INFO => {
+                    const reference = &@constCast(data.export_modules.?)[export_module_index];
+                    reference.value = .{ .int = entry.d_val };
+                    reference.name = data.getStringFromTable(reference.value.bits.name_offset);
+                    export_module_index += 1;
+                },
+                DT_SCE_NEEDED_MODULE => {
+                    const reference = &@constCast(data.import_modules.?)[import_module_index];
+                    reference.value = .{ .int = entry.d_val };
+                    reference.name = data.getStringFromTable(reference.value.bits.name_offset);
+                    import_module_index += 1;
+                },
+                DT_SCE_EXPORT_LIB => {
+                    const reference = &@constCast(data.export_libraries.?)[export_libraries_index];
+                    reference.value = .{ .int = entry.d_val };
+                    reference.name = data.getStringFromTable(reference.value.bits.name_offset);
+                    export_libraries_index += 1;
+                },
+                DT_SCE_IMPORT_LIB => {
+                    const reference = &@constCast(data.import_libraries.?)[import_libraries_index];
+                    reference.value = .{ .int = entry.d_val };
+                    reference.name = data.getStringFromTable(reference.value.bits.name_offset);
+                    import_libraries_index += 1;
+                },
+                else => continue,
+            }
+        }
     }
 
     return data;
 }
 
-pub const PTYPE_FAKE = 0x1;
-
 pub const PT_SCE_DYNLIBDATA = 0x61000000;
 pub const PT_SCE_RELRO = 0x61000010;
+
+pub const DT_SCE_SYMTAB = 0x61000039;
+pub const DT_SCE_SYMTABSZ = 0x6100003F;
+
+pub const DT_SCE_STRTAB = 0x61000035;
+pub const DT_SCE_STRSZ = 0x61000037;
 
 pub const DT_SCE_RELA = 0x6100002F;
 pub const DT_SCE_RELASZ = 0x61000031;
@@ -195,3 +378,9 @@ pub const DT_SCE_RELASZ = 0x61000031;
 pub const DT_SCE_JMPREL = 0x61000029;
 pub const DT_SCE_PLTREL = 0x6100002B;
 pub const DT_SCE_PLTRELSZ = 0x6100002D;
+
+pub const DT_NEEDED = 1;
+pub const DT_SCE_MODULE_INFO = 0x6100000D;
+pub const DT_SCE_NEEDED_MODULE = 0x6100000F;
+pub const DT_SCE_EXPORT_LIB	= 0x61000013;
+pub const DT_SCE_IMPORT_LIB	= 0x61000015;

@@ -43,8 +43,8 @@ pub fn main() !u8 {
 
     var root_cmd = app.rootCommand();
 
-    var run_cmd = app.createCommand("run", "Run an extracted PS4 fake SELF in an extracted fake PKG directory.");
-    try run_cmd.addArg(yazap.flag.argOne("path", 'i', "Path to the eboot.bin"));
+    var run_cmd = app.createCommand("run", "Run an extracted PS4 fake SELF/OELF in an extracted fake PKG directory.");
+    try run_cmd.addArg(yazap.flag.argOne("path", 'i', "Path to the eboot.bin/elf"));
 
     try root_cmd.addSubcommand(run_cmd);
 
@@ -56,11 +56,6 @@ pub fn main() !u8 {
     }
 
     if (args.subcommandContext("run")) |run_cmd_args| {
-        if (!run_cmd_args.hasArgs()) {
-            try app.displaySubcommandHelp();
-            return 1;
-        }
-
         if (run_cmd_args.valueOf("path")) |path| {
             var file = try std.fs.cwd().openFile(path, .{ .mode = .read_only });
             errdefer file.close();
@@ -72,8 +67,6 @@ pub fn main() !u8 {
 
             return 0;
         }
-
-        try app.displaySubcommandHelp();
         return 1;
     }
 

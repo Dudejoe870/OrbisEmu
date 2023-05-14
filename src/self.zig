@@ -51,6 +51,8 @@ pub const ParseError = error{
     InvalidFakeSelf,
 };
 
+pub const SELF_MAGIC = [4]u8{ 79, 21, 61, 29 };
+
 /// Parses the SELF and returns the reconstructed OELF.
 pub fn toOElf(stream: anytype, allocator: std.mem.Allocator) ![]u8 {
     const StreamType = @TypeOf(stream);
@@ -65,7 +67,7 @@ pub fn toOElf(stream: anytype, allocator: std.mem.Allocator) ![]u8 {
     try stream.seekableStream().seekTo(0);
 
     const common_header = try stream.reader().readStruct(CommonHeader);
-    if (!std.mem.eql(u8, &common_header.magic, &[4]u8 { 79, 21, 61, 29 })) {
+    if (!std.mem.eql(u8, &common_header.magic, &SELF_MAGIC)) {
         return ParseError.InvalidFakeSelf;
     }
     const extended_header = try stream.reader().readStruct(ExtendedHeader);
