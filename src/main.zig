@@ -32,7 +32,13 @@ pub const default_allocator = switch (builtin.mode) {
 /// General Byte Stream Utility
 pub const stream_util = @import("stream_util.zig");
 
-/// Handles loading Kernel ELF Modules.
+/// Cross-Platform Page Allocation Utility
+pub const page_util = @import("page_util.zig");
+
+/// Alignment Utility
+pub const align_util = @import("align_util.zig");
+
+/// Kernel ELF Module Loader
 pub const module_loader = @import("module_loader.zig");
 
 pub fn main() !u8 {
@@ -57,6 +63,9 @@ pub fn main() !u8 {
 
     if (args.subcommandContext("run")) |run_cmd_args| {
         if (run_cmd_args.valueOf("path")) |path| {
+            module_loader.init(default_allocator);
+            defer module_loader.deinit();
+
             var file = try std.fs.cwd().openFile(path, .{ .mode = .read_only });
             errdefer file.close();
             var main_module = try module_loader.load(file, default_allocator);

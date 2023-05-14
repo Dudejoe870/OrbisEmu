@@ -18,6 +18,7 @@
 
 const std = @import("std");
 const root = @import("root");
+const align_util = root.align_util;
 
 const elf = std.elf;
 
@@ -65,7 +66,7 @@ pub const LibraryReference = struct {
 
 pub const Data = struct {
     allocator: std.mem.Allocator,
-    elf_data: []const u8,
+    bytes: []const u8,
 
     header: *const Header = undefined,
     program_headers: []const elf.Elf64_Phdr = undefined,
@@ -97,7 +98,7 @@ pub const Data = struct {
         if (self.export_libraries) |libraries| self.allocator.free(libraries);
         if (self.import_libraries) |libraries| self.allocator.free(libraries);
 
-        self.allocator.free(self.elf_data);
+        self.allocator.free(self.bytes);
     }
 
     pub fn getStringFromTable(self: *const Data, offset: u64) []const u8 {
@@ -159,9 +160,9 @@ inline fn sliceCast(comptime T: type, buffer: []const u8, offset: usize, count: 
 pub fn parse(oelf: []const u8, allocator: std.mem.Allocator) !Data {
     var data = Data{
         .allocator = allocator,
-        .elf_data = oelf,
+        .bytes = oelf,
     };
-    errdefer allocator.free(data.elf_data);
+    errdefer allocator.free(data.bytes);
 
     data.header = std.mem.bytesAsValue(Header, @alignCast(@alignOf(Header), oelf[0..@sizeOf(Header)]));
     _ = try elf.Header.parse(std.mem.asBytes(data.header));
@@ -203,7 +204,7 @@ pub fn parse(oelf: []const u8, allocator: std.mem.Allocator) !Data {
                     load_addr_begin = segment.p_vaddr;
                 }
 
-                const aligned_addr = std.mem.alignBackward(segment.p_vaddr + segment.p_memsz, segment.p_align);
+                const aligned_addr = align_util.alignDown(segment.p_vaddr + segment.p_memsz, segment.p_align);
                 if (aligned_addr > load_addr_end) {
                     load_addr_end = aligned_addr;
                 }
@@ -362,6 +363,8 @@ pub fn parse(oelf: []const u8, allocator: std.mem.Allocator) !Data {
 
     return data;
 }
+
+pub const ET_SCE_DYNAMIC = 0xFE18;
 
 pub const PT_SCE_DYNLIBDATA = 0x61000000;
 pub const PT_SCE_RELRO = 0x61000010;
