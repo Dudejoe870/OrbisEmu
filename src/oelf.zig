@@ -87,6 +87,9 @@ pub const Data = struct {
     export_libraries: ?[]const LibraryReference = null,
     import_libraries: ?[]const LibraryReference = null,
 
+    init_proc_offset: ?u64 = null,
+    proc_param_offset: ?u64 = null,
+
     mapped_size: usize = 0,
 
     pub fn deinit(self: *Data) void {
@@ -154,10 +157,12 @@ inline fn sliceCast(comptime T: type, buffer: []const u8, offset: usize, count: 
 
 /// Parses a data buffer into a Data struct that contains all of the information from the OELF file.
 ///
-/// The data buffer transfers ownership to the Data struct and thus is deinitialized there, NOT by the caller.
+/// Transfers ownership of the data buffer to the Data struct and thus is deinitialized there, NOT by the caller.
 ///
 /// Allocator must be the same allocator used to allocate the slice.
 pub fn parse(oelf: []const u8, allocator: std.mem.Allocator) !Data {
+    // TODO: TLS (Thread Local Storage)
+
     var data = Data{
         .allocator = allocator,
         .bytes = oelf,
@@ -220,6 +225,11 @@ pub fn parse(oelf: []const u8, allocator: std.mem.Allocator) !Data {
 
                     for (data.dynamic_entries) |entry| {
                         switch (entry.d_tag) {
+                            // Init Procedure
+                            elf.DT_INIT => {
+                                data.init_proc_offset = entry.d_val;
+                            },
+
                             // Symbol Table
                             DT_SCE_SYMTAB => {
                                 if (symbol_table_offset != null) return ParseError.MoreThanOneSymTabTag;
@@ -261,7 +271,7 @@ pub fn parse(oelf: []const u8, allocator: std.mem.Allocator) !Data {
                             },
 
                             // Other Tags
-                            DT_NEEDED => {
+                            elf.DT_NEEDED => {
                                 num_needed_files += 1;
                             },
                             DT_SCE_MODULE_INFO => {
@@ -283,6 +293,9 @@ pub fn parse(oelf: []const u8, allocator: std.mem.Allocator) !Data {
                 PT_SCE_DYNLIBDATA => {
                     if (dynlib_data_offset != null) return ParseError.MoreThanOneDynlibData;
                     dynlib_data_offset = segment.p_offset;
+                },
+                PT_SCE_PROCPARAM => {
+                    data.proc_param_offset = segment.p_vaddr;
                 },
                 else => continue,
             }
@@ -328,7 +341,7 @@ pub fn parse(oelf: []const u8, allocator: std.mem.Allocator) !Data {
         var import_libraries_index: usize = 0;
         for (data.dynamic_entries) |entry| {
             switch (entry.d_tag) {
-                DT_NEEDED => {
+                elf.DT_NEEDED => {
                     @constCast(data.needed_files.?)[needed_index] = data.getStringFromTable(entry.d_val);
                     needed_index += 1;
                 },
@@ -367,6 +380,7 @@ pub fn parse(oelf: []const u8, allocator: std.mem.Allocator) !Data {
 pub const ET_SCE_DYNAMIC = 0xFE18;
 
 pub const PT_SCE_DYNLIBDATA = 0x61000000;
+pub const PT_SCE_PROCPARAM = 0x61000001;
 pub const PT_SCE_RELRO = 0x61000010;
 
 pub const DT_SCE_SYMTAB = 0x61000039;
@@ -382,8 +396,7 @@ pub const DT_SCE_JMPREL = 0x61000029;
 pub const DT_SCE_PLTREL = 0x6100002B;
 pub const DT_SCE_PLTRELSZ = 0x6100002D;
 
-pub const DT_NEEDED = 1;
 pub const DT_SCE_MODULE_INFO = 0x6100000D;
 pub const DT_SCE_NEEDED_MODULE = 0x6100000F;
-pub const DT_SCE_EXPORT_LIB	= 0x61000013;
-pub const DT_SCE_IMPORT_LIB	= 0x61000015;
+pub const DT_SCE_EXPORT_LIB = 0x61000013;
+pub const DT_SCE_IMPORT_LIB = 0x61000015;

@@ -60,10 +60,7 @@ pub fn alloc(len: usize, protect: ProtectSettings) ![]align(std.mem.page_size) u
         const ptr = try win.VirtualAlloc(null, aligned_len, win.MEM_COMMIT | win.MEM_RESERVE, protect.toWindows());
         return @ptrCast([*]align(std.mem.page_size) u8, @alignCast(std.mem.page_size, ptr))[0..len];
     } else {
-        return try std.os.mmap(null, aligned_len, 
-            protect.toPosix(), 
-            std.os.MAP.PRIVATE | std.os.MAP.ANONYMOUS, 
-            -1, 0)[0..len];
+        return try std.os.mmap(null, aligned_len, protect.toPosix(), std.os.MAP.PRIVATE | std.os.MAP.ANONYMOUS, -1, 0)[0..len];
     }
 }
 

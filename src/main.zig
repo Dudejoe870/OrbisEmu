@@ -41,6 +41,14 @@ pub const align_util = @import("align_util.zig");
 /// Kernel ELF Module Loader
 pub const module_loader = @import("module_loader.zig");
 
+/// HLE Module Definitions
+pub const hle_modules = @import("hle_modules.zig");
+
+/// NID lookup table (generated from ps4libdoc)
+pub const nid_table = @import("nid_table.zig");
+
+pub var eboot_module: *const module_loader.Module = undefined;
+
 pub fn main() !u8 {
     defer _ = gpa.deinit();
 
@@ -50,7 +58,7 @@ pub fn main() !u8 {
     var root_cmd = app.rootCommand();
 
     var run_cmd = app.createCommand("run", "Run an extracted PS4 fake SELF/OELF in an extracted fake PKG directory.");
-    try run_cmd.addArg(yazap.flag.argOne("path", 'i', "Path to the eboot.bin/elf"));
+    try run_cmd.addArg(yazap.flag.argOne("path", 'i', "Path to the eboot.bin/oelf/elf"));
 
     try root_cmd.addSubcommand(run_cmd);
 
@@ -66,13 +74,9 @@ pub fn main() !u8 {
             module_loader.init(default_allocator);
             defer module_loader.deinit();
 
-            var file = try std.fs.cwd().openFile(path, .{ .mode = .read_only });
-            errdefer file.close();
-            var main_module = try module_loader.load(file, default_allocator);
-            _ = main_module;
-            file.close();
+            eboot_module = try module_loader.loadFile(path, default_allocator);
 
-            // TODO: Run loaded SELF.
+            // TODO: Run loaded eboot.
 
             return 0;
         }

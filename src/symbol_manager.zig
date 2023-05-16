@@ -1,4 +1,4 @@
-// Alignment Utility
+// Global Symbol Manager
 //
 // OrbisEmu is an experimental PS4 GPU Emulator and Orbis compatibility layer for the Windows and Linux operating systems under the x86_64 CPU architecture.
 // Copyright (C) 2023  John Clemis
@@ -18,16 +18,22 @@
 
 const std = @import("std");
 
-pub fn alignDown(size: anytype, alignment: @TypeOf(size)) @TypeOf(size) {
-    comptime std.debug.assert(@typeInfo(@TypeOf(size)) == .Int);
-    const correction: @TypeOf(size) = switch (size % alignment > 0) {
-        true => 1,
-        false => 0,
-    };
-    return ((size / alignment) + correction) * alignment;
+var symbol_map: std.StringHashMap(*anyopaque) = undefined;
+
+pub fn init(allocator: std.mem.Allocator) void {
+    symbol_map = std.StringHashMap(*anyopaque).init(allocator);
 }
 
-pub fn alignUp(size: anytype, alignment: @TypeOf(size)) @TypeOf(size) {
-    comptime std.debug.assert(@typeInfo(@TypeOf(size)) == .Int);
-    return (size / alignment) * alignment;
+pub fn loadLowPriorityHleSymbols() !void {}
+
+// In the middle of loading these, the modules get loaded (which are the LLE symbols, they can overwrite the low-priority HLE symbols but not the high-priority ones)
+
+pub fn loadHighPriorityHleSymbols() !void {}
+
+pub fn deinit() void {
+    symbol_map.deinit();
+}
+
+pub fn registerSymbol(name: []const u8, address: *anyopaque) !void {
+    try symbol_map.put(name, address);
 }

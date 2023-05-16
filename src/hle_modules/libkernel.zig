@@ -1,4 +1,4 @@
-// Alignment Utility
+// HLE implementation for libkernel
 //
 // OrbisEmu is an experimental PS4 GPU Emulator and Orbis compatibility layer for the Windows and Linux operating systems under the x86_64 CPU architecture.
 // Copyright (C) 2023  John Clemis
@@ -16,18 +16,27 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-const std = @import("std");
+pub const info = .{
+    .name = "libkernel",
+    .default_mode = .lle,
+    .library_list = .{libkernel},
+};
 
-pub fn alignDown(size: anytype, alignment: @TypeOf(size)) @TypeOf(size) {
-    comptime std.debug.assert(@typeInfo(@TypeOf(size)) == .Int);
-    const correction: @TypeOf(size) = switch (size % alignment > 0) {
-        true => 1,
-        false => 0,
+pub const libkernel = struct {
+    pub const info = .{
+        .name = "libkernel",
+        .default_mode = .hle,
+        .lle_symbols = .{
+            "sceKernelGetCompiledSdkVersion",
+            "sceKernelIsAddressSanitizerEnabled",
+            "sceKernelError",
+            "__stack_chk_guard",
+            "sceKernelGetFsSandboxRandomWord",
+            "scePthreadEqual",
+        },
     };
-    return ((size / alignment) + correction) * alignment;
-}
 
-pub fn alignUp(size: anytype, alignment: @TypeOf(size)) @TypeOf(size) {
-    comptime std.debug.assert(@typeInfo(@TypeOf(size)) == .Int);
-    return (size / alignment) * alignment;
-}
+    pub fn sceKernelIsNeoMode() callconv(.SysV) c_int {
+        return 1;
+    }
+};

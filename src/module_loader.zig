@@ -27,31 +27,36 @@ const oelf = @import("oelf.zig");
 const ps4_self = @import("self.zig");
 
 pub const Module = struct {
-    pub const ExtraInfo = struct {
-        allocator: std.mem.Allocator = undefined,
-        export_name: []const u8 = undefined,
-        library_name: ?[]const u8 = null,
+    allocator: std.mem.Allocator = undefined,
 
-        pub fn deinit(self: *ExtraInfo) void {
-            self.allocator.free(self.export_name);
-            if (self.library_name) |name| self.allocator.free(name);
-        }
-    };
+    id: u16 = 0,
+    name: []const u8 = undefined,
+
+    export_name: []const u8 = undefined,
+    library_names: ?[][]const u8 = null,
 
     data: []align(std.mem.page_size) u8 = undefined,
-    extra_info: ExtraInfo = .{},
 
     code_section: []u8 = undefined,
     data_section: []u8 = undefined,
     relro_section: []u8 = undefined,
 
-    init_proc: ?*const fn(argc: usize, argv: ?*?*anyopaque, ?*const fn(argc: usize, argv: ?*?*anyopaque) callconv(.SysV) c_int) callconv(.SysV) c_int = null,
-    entry_point: ?*const fn(arg: ?*anyopaque, exit_function: ?*const fn() callconv(.SysV) void) callconv(.SysV) ?*anyopaque = null,
+    init_proc: ?*const fn (argc: usize, argv: ?[*]?[*:0]u8, ?*const fn (argc: usize, argv: ?[*]?[*:0]u8) callconv(.SysV) c_int) callconv(.SysV) c_int = null,
+    entry_point: ?*const fn (arg: ?*anyopaque, exit_function: ?*const fn () callconv(.SysV) void) callconv(.SysV) ?*anyopaque = null,
+    proc_param: ?*anyopaque = null,
 
     is_lib: bool = false,
 
     pub fn deinit(self: *Module) void {
-        self.extra_info.deinit();
+        self.allocator.free(self.name);
+        self.allocator.free(self.export_name);
+        if (self.library_names) |names| {
+            for (names) |name| {
+                self.allocator.free(name);
+            }
+            self.allocator.free(names);
+        }
+
         page_util.free(self.data);
     }
 };
@@ -59,7 +64,7 @@ pub const Module = struct {
 pub const LoadError = error{
     InvalidSelfOrOElf,
     NothingToLoad,
-    NoModuleName,
+    NoModuleInfo,
 
     NotAllSectionsArePresent,
 
@@ -69,14 +74,18 @@ pub const LoadError = error{
 };
 
 var loaded_modules: std.ArrayList(Module) = undefined;
+var module_name_to_index: std.StringHashMap(usize) = undefined;
 
 pub fn init(allocator: std.mem.Allocator) void {
     loaded_modules = std.ArrayList(Module).init(allocator);
+    module_name_to_index = std.StringHashMap(usize).init(allocator);
 }
 
 pub fn deinit() void {
+    module_name_to_index.deinit();
+
     for (loaded_modules.items) |*module| {
-        std.log.info("Unloading module \"{s}\" (is_lib: {any})", .{ module.extra_info.export_name, module.is_lib });
+        std.log.info("Unloading module \"{s}\" (id: 0x{x}, is_lib: {any})", .{ module.name, module.id, module.is_lib });
         module.deinit();
     }
     loaded_modules.deinit();
@@ -86,8 +95,26 @@ pub fn getLoadedModules() []const Module {
     return loaded_modules.items;
 }
 
+pub fn isModuleLoadedFromName(name: []const u8) bool {
+    return module_name_to_index.contains(name);
+}
+
+pub fn getModuleFromName(name: []const u8) ?*const Module {
+    if (module_name_to_index.get(name)) |index| {
+        return &loaded_modules.items[index];
+    }
+    return null;
+}
+
+/// Load either a SELF or OELF file as a Kernel Module.
+pub fn loadFile(path: []const u8, allocator: std.mem.Allocator) !*const Module {
+    var file = try std.fs.cwd().openFile(path, .{ .mode = .read_only });
+    defer file.close();
+    return load(file, std.fs.path.stem(path), allocator);
+}
+
 /// Load either a SELF or OELF byte stream as a Kernel Module.
-pub fn load(stream: anytype, allocator: std.mem.Allocator) !*const Module {
+pub fn load(stream: anytype, name: []const u8, allocator: std.mem.Allocator) !*const Module {
     const StreamType = @TypeOf(stream);
 
     comptime {
@@ -95,13 +122,21 @@ pub fn load(stream: anytype, allocator: std.mem.Allocator) !*const Module {
         std.debug.assert(@hasDecl(StreamType, "reader"));
     }
 
+    if (getModuleFromName(name)) |mod| {
+        std.log.warn("Trying to load Module \"{s}\" but it is already loaded", .{name});
+        return mod;
+    }
+
+    const module_index = loaded_modules.items.len;
     try loaded_modules.append(.{});
-    var mod = &loaded_modules.items[loaded_modules.items.len-1];
+    try module_name_to_index.put(name, module_index);
+    var mod = &loaded_modules.items[module_index];
+
     var elf_data: oelf.Data = undefined;
 
     // Check the first 4 bytes (The file magic) to see if the stream contains a SELF file or an OELF file.
     //
-    // On real hardware SELFs are encrypted and compressed, here they are "fake" SELF files that have 
+    // On real hardware SELFs are encrypted and compressed, here they are "fake" SELF files that have
     // been pre-decrypted and pre-decompressed on real hardware.
     // We still have to parse them however, as they move around the blocks of ELF data as a
     // left over from when they were encoded.
@@ -132,13 +167,27 @@ pub fn load(stream: anytype, allocator: std.mem.Allocator) !*const Module {
     }
     defer elf_data.deinit();
     if (elf_data.mapped_size == 0) return LoadError.NothingToLoad;
-    if (elf_data.export_modules == null) return LoadError.NoModuleName;
+    if (elf_data.export_modules == null) return LoadError.NoModuleInfo;
     logDebugElfInfo(&elf_data);
 
     mod.is_lib = elf_data.header.type == oelf.ET_SCE_DYNAMIC;
 
     mod.data = try page_util.alloc(elf_data.mapped_size, .{ .read = true, .write = true, .execute = true });
     errdefer page_util.free(mod.data);
+
+    mod.id = elf_data.export_modules.?[0].value.bits.id;
+
+    if (elf_data.init_proc_offset) |offset| {
+        mod.init_proc = @ptrCast(@TypeOf(mod.init_proc), &mod.data[offset]);
+    }
+    if (elf_data.proc_param_offset) |offset| {
+        mod.proc_param = @ptrCast(*anyopaque, &mod.data[offset]);
+    }
+    if (elf_data.header.entry != 0) {
+        mod.entry_point = @ptrCast(@TypeOf(mod.entry_point), &mod.data[elf_data.header.entry]);
+    }
+
+    // TODO: TLS (Thread Local Storage)
 
     // Map all Sections into memory using the data from the Program Headers.
     {
@@ -152,22 +201,20 @@ pub fn load(stream: anytype, allocator: std.mem.Allocator) !*const Module {
                 mod.code_section = mod.data[align_util.alignDown(segment.p_vaddr, segment.p_align)..][0..segment.p_memsz];
                 @memcpy(mod.code_section[0..segment.p_filesz], elf_data.bytes[segment.p_offset..][0..segment.p_filesz]);
 
-                if (elf_data.header.entry != 0) {
-                    mod.entry_point = @ptrCast(@TypeOf(mod.entry_point), &mod.data[elf_data.header.entry]);
-                }
-
                 mapped_code = true;
             } else if (segment.p_type == oelf.PT_SCE_RELRO) {
                 if (mapped_relro) return LoadError.MoreThanOneRelroSection;
 
                 mod.relro_section = mod.data[align_util.alignDown(segment.p_vaddr, segment.p_align)..][0..segment.p_memsz];
-                @memcpy(mod.code_section[0..segment.p_filesz], elf_data.bytes[segment.p_offset..][0..segment.p_filesz]);
+                @memcpy(mod.relro_section[0..segment.p_filesz], elf_data.bytes[segment.p_offset..][0..segment.p_filesz]);
+
                 mapped_relro = true;
             } else if (segment.p_flags & elf.PF_R > 0) {
                 if (mapped_data) return LoadError.MoreThanOneDataSection;
 
                 mod.data_section = mod.data[align_util.alignDown(segment.p_vaddr, segment.p_align)..][0..segment.p_memsz];
-                @memcpy(mod.code_section[0..segment.p_filesz], elf_data.bytes[segment.p_offset..][0..segment.p_filesz]);
+                @memcpy(mod.data_section[0..segment.p_filesz], elf_data.bytes[segment.p_offset..][0..segment.p_filesz]);
+
                 mapped_data = true;
             }
 
@@ -179,24 +226,40 @@ pub fn load(stream: anytype, allocator: std.mem.Allocator) !*const Module {
         }
     }
 
-    // Fill in extra info.
+    // Fill in variable-length strings.
+    mod.allocator = allocator;
+
     {
-        mod.extra_info.allocator = allocator;
+        const mod_export_name = elf_data.export_modules.?[0].name;
+        mod.export_name = try allocator.alloc(u8, mod_export_name.len);
+        @memcpy(@constCast(mod.export_name), mod_export_name);
+    }
+    errdefer allocator.free(mod.export_name);
 
-        {
-            const mod_export_name = elf_data.export_modules.?[0].name;
-            mod.extra_info.export_name = try allocator.alloc(u8, mod_export_name.len);
-            @memcpy(@constCast(mod.extra_info.export_name), mod_export_name);
+    {
+        mod.name = try allocator.alloc(u8, name.len);
+        @memcpy(@constCast(mod.name), name);
+    }
+    errdefer allocator.free(mod.name);
+
+    if (elf_data.export_libraries) |libraries| {
+        mod.library_names = try allocator.alloc([]const u8, libraries.len);
+        errdefer allocator.free(mod.library_names.?);
+        for (libraries, 0..) |mod_library_name, i| {
+            mod.library_names.?[i] = try allocator.alloc(u8, mod_library_name.name.len);
+            @memcpy(@constCast(mod.library_names.?[i]), mod_library_name.name);
         }
-
-        if (elf_data.export_libraries) |libraries| {
-            const mod_library_name = libraries[0].name;
-            mod.extra_info.library_name = try allocator.alloc(u8, mod_library_name.len);
-            @memcpy(@constCast(mod.extra_info.library_name.?), mod_library_name);
+    }
+    errdefer {
+        if (mod.library_names) |lib_names| {
+            for (lib_names) |mod_library_name| {
+                allocator.free(mod_library_name);
+            }
+            allocator.free(lib_names);
         }
     }
 
-    std.log.info("Loaded module \"{s}\" ({d} bytes, is_lib: {any})", .{ mod.extra_info.export_name, mod.data.len, mod.is_lib });
+    std.log.info("Loaded module \"{s}\" (export_name: \"{s}\", id: 0x{x}, {d} bytes, is_lib: {any})", .{ mod.name, mod.export_name, mod.id, mod.data.len, mod.is_lib });
     return mod;
 }
 

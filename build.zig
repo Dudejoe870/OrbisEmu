@@ -33,11 +33,41 @@ pub fn build(b: *std.Build) void {
         return;
     }
 
-    const exe = b.addExecutable(.{ .name = "OrbisEmu", .root_source_file = .{ .path = "src/main.zig" }, .target = target, .optimize = optimize });
-
     const yazap_module = b.dependency("yazap", .{}).module("yazap");
+
+    const generate_nid_table_exe = b.addExecutable(.{
+        .name = "generate_nid_table",
+        .root_source_file = .{ .path = "tools/generate_nid_table/src/main.zig" },
+        .target = std.zig.CrossTarget.fromTarget(builtin.target),
+        .optimize = optimize,
+    });
+    generate_nid_table_exe.addModule("yazap", yazap_module);
+
+    const generate_nid_table = b.addRunArtifact(generate_nid_table_exe);
+    generate_nid_table.addArg("-i");
+    generate_nid_table.addDirectorySourceArg(std.Build.FileSource.relative("external/ps4libdoc"));
+    generate_nid_table.addArg("-o");
+    const nid_table_source = generate_nid_table.addOutputFileArg("nid_table.zig");
+    generate_nid_table.expectExitCode(0);
+
+    const generate_sources = b.addWriteFiles();
+    generate_sources.addCopyFileToSource(nid_table_source, "src/nid_table.zig");
+
+    const generate_sources_step = b.step("generate-sources", "Generates all generated source-code.");
+    generate_sources_step.dependOn(&generate_sources.step);
+
+    const exe = b.addExecutable(.{
+        .name = "OrbisEmu",
+        .root_source_file = std.Build.FileSource.relative("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     exe.addModule("yazap", yazap_module);
 
     exe.linkLibC();
     b.installArtifact(exe);
+}
+
+inline fn thisDir() []const u8 {
+    return comptime std.fs.path.dirname(@src().file) orelse ".";
 }

@@ -1,4 +1,4 @@
-// Alignment Utility
+// HLE Module Definitions
 //
 // OrbisEmu is an experimental PS4 GPU Emulator and Orbis compatibility layer for the Windows and Linux operating systems under the x86_64 CPU architecture.
 // Copyright (C) 2023  John Clemis
@@ -16,18 +16,4 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-const std = @import("std");
-
-pub fn alignDown(size: anytype, alignment: @TypeOf(size)) @TypeOf(size) {
-    comptime std.debug.assert(@typeInfo(@TypeOf(size)) == .Int);
-    const correction: @TypeOf(size) = switch (size % alignment > 0) {
-        true => 1,
-        false => 0,
-    };
-    return ((size / alignment) + correction) * alignment;
-}
-
-pub fn alignUp(size: anytype, alignment: @TypeOf(size)) @TypeOf(size) {
-    comptime std.debug.assert(@typeInfo(@TypeOf(size)) == .Int);
-    return (size / alignment) * alignment;
-}
+pub const module_list = .{@import("hle_modules/libkernel.zig")};
