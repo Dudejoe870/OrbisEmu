@@ -1,3 +1,5 @@
+// Build Program
+//
 // OrbisEmu is an experimental PS4 GPU Emulator and Orbis compatibility layer for the Windows and Linux operating systems under the x86_64 CPU architecture.
 // Copyright (C) 2023  John Clemis
 //
@@ -39,8 +41,9 @@ pub fn build(b: *std.Build) void {
         .name = "generate_nid_table",
         .root_source_file = .{ .path = "tools/generate_nid_table/src/main.zig" },
         .target = std.zig.CrossTarget.fromTarget(builtin.target),
-        .optimize = optimize,
+        .optimize = .ReleaseFast,
     });
+    generate_nid_table_exe.linkLibC();
     generate_nid_table_exe.addModule("yazap", yazap_module);
 
     const generate_nid_table = b.addRunArtifact(generate_nid_table_exe);
@@ -62,9 +65,9 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    exe.linkLibC();
     exe.addModule("yazap", yazap_module);
 
-    exe.linkLibC();
     b.installArtifact(exe);
 }
 

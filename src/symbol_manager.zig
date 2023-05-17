@@ -24,16 +24,19 @@ pub fn init(allocator: std.mem.Allocator) void {
     symbol_map = std.StringHashMap(*anyopaque).init(allocator);
 }
 
-pub fn loadLowPriorityHleSymbols() !void {}
-
-// In the middle of loading these, the modules get loaded (which are the LLE symbols, they can overwrite the low-priority HLE symbols but not the high-priority ones)
-
-pub fn loadHighPriorityHleSymbols() !void {}
-
 pub fn deinit() void {
     symbol_map.deinit();
 }
 
+pub fn getSymbolAmount() usize {
+    return symbol_map.unmanaged.size;
+}
+
+pub fn getSymbolAddress(name: []const u8) ?*anyopaque {
+    return symbol_map.get(name);
+}
+
+/// Name must not go out of scope until deinitialization, caller is responsible for the name key memory.
 pub fn registerSymbol(name: []const u8, address: *anyopaque) !void {
     try symbol_map.put(name, address);
 }

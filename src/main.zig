@@ -1,4 +1,4 @@
-// Main Entrypoint and argument parsing
+// Main Entrypoint And Argument Parsing
 //
 // OrbisEmu is an experimental PS4 GPU Emulator and Orbis compatibility layer for the Windows and Linux operating systems under the x86_64 CPU architecture.
 // Copyright (C) 2023  John Clemis
@@ -29,25 +29,49 @@ pub const default_allocator = switch (builtin.mode) {
     else => gpa.allocator(),
 };
 
+pub const LleModule = @import("LleModule.zig");
+
 /// General Byte Stream Utility
-pub const stream_util = @import("stream_util.zig");
+pub const stream_util = @import("util/stream_util.zig");
 
 /// Cross-Platform Page Allocation Utility
-pub const page_util = @import("page_util.zig");
+pub const page_util = @import("util/page_util.zig");
 
 /// Alignment Utility
-pub const align_util = @import("align_util.zig");
+pub const align_util = @import("util/align_util.zig");
 
-/// Kernel ELF Module Loader
-pub const module_loader = @import("module_loader.zig");
+/// Encoded NID Symbol Name Utility
+pub const nid_util = @import("util/nid_util.zig");
 
-/// HLE Module Definitions
-pub const hle_modules = @import("hle_modules.zig");
+/// LLE Kernel ELF Module Loader
+pub const lle_module_loader = @import("lle_module_loader.zig");
 
-/// NID lookup table (generated from ps4libdoc)
+/// HLE Module Loader
+pub const hle_module_loader = @import("hle_module_loader.zig");
+
+/// NID Lookup Table (generated from ps4libdoc)
 pub const nid_table = @import("nid_table.zig");
 
-pub var eboot_module: *const module_loader.Module = undefined;
+/// Global Symbol Manager
+pub const symbol_manager = @import("symbol_manager.zig");
+
+/// Main eboot.bin LLE Module
+pub var eboot_module: *const LleModule = undefined;
+
+/// Game Directory Path
+pub var eboot_directory_path: []const u8 = undefined;
+
+/// eboot_dir/sce_modules
+pub var sce_modules_eboot_directory_path: []const u8 = undefined;
+
+/// Emulator EXE Path
+pub var exe_path: []const u8 = undefined;
+
+/// exe_dir/system/common/lib
+pub var system_common_exe_directory_path: []const u8 = undefined;
+
+/// exe_dir/system/priv/lib
+pub var system_priv_exe_directory_path: []const u8 = undefined;
 
 pub fn main() !u8 {
     defer _ = gpa.deinit();
@@ -71,10 +95,40 @@ pub fn main() !u8 {
 
     if (args.subcommandContext("run")) |run_cmd_args| {
         if (run_cmd_args.valueOf("path")) |path| {
-            module_loader.init(default_allocator);
-            defer module_loader.deinit();
+            symbol_manager.init(default_allocator);
+            defer symbol_manager.deinit();
 
-            eboot_module = try module_loader.loadFile(path, default_allocator);
+            eboot_directory_path = try default_allocator.dupe(u8, std.fs.path.dirname(path).?);
+            defer default_allocator.free(eboot_directory_path);
+            
+            sce_modules_eboot_directory_path = try std.fs.path.join(default_allocator, &[_][]const u8 { eboot_directory_path, "sce_modules" });
+            defer default_allocator.free(sce_modules_eboot_directory_path);
+
+            exe_path = try std.fs.selfExeDirPathAlloc(default_allocator);
+            defer default_allocator.free(exe_path);
+
+            system_common_exe_directory_path = try std.fs.path.join(default_allocator, &[_][]const u8 { exe_path, "system/common/lib" });
+            defer default_allocator.free(system_common_exe_directory_path);
+
+            system_priv_exe_directory_path = try std.fs.path.join(default_allocator, &[_][]const u8 { exe_path, "system/priv/lib" });
+            defer default_allocator.free(system_priv_exe_directory_path);
+
+            try nid_table.init(default_allocator);
+            defer nid_table.deinit();
+
+            lle_module_loader.init(default_allocator);
+            defer lle_module_loader.deinit();
+
+            eboot_module = try lle_module_loader.loadFile(path);
+            try lle_module_loader.loadAllDependencies();
+
+            std.log.info("Loading Global Symbols...", .{});
+            try hle_module_loader.registerLowPriorityHleSymbols();
+            try lle_module_loader.registerGlobalLleSymbols();
+            try hle_module_loader.registerHighPriorityHleSymbols();
+            std.log.info("Loaded {d} Symbols.", .{symbol_manager.getSymbolAmount()});
+
+            try lle_module_loader.linkModules();
 
             // TODO: Run loaded eboot.
 

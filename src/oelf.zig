@@ -41,7 +41,7 @@ pub const Header = extern struct {
 
 pub const ModuleReference = struct {
     name: []const u8,
-    value: packed union {
+    value: extern union {
         int: u64,
         bits: packed struct {
             name_offset: u32,
@@ -54,7 +54,7 @@ pub const ModuleReference = struct {
 
 pub const LibraryReference = struct {
     name: []const u8,
-    value: packed union {
+    value: extern union {
         int: u64,
         bits: packed struct {
             name_offset: u32,
@@ -66,7 +66,7 @@ pub const LibraryReference = struct {
 
 pub const Data = struct {
     allocator: std.mem.Allocator,
-    bytes: []const u8,
+    bytes: []align(@alignOf(Header)) const u8,
 
     header: *const Header = undefined,
     program_headers: []const elf.Elf64_Phdr = undefined,
@@ -157,10 +157,10 @@ inline fn sliceCast(comptime T: type, buffer: []const u8, offset: usize, count: 
 
 /// Parses a data buffer into a Data struct that contains all of the information from the OELF file.
 ///
-/// Transfers ownership of the data buffer to the Data struct and thus is deinitialized there, NOT by the caller.
+/// Transfers ownership of the data buffer to the Data struct and thus is deinitialized there, NOT directly.
 ///
 /// Allocator must be the same allocator used to allocate the slice.
-pub fn parse(oelf: []const u8, allocator: std.mem.Allocator) !Data {
+pub fn parse(oelf: []align(@alignOf(Header)) const u8, allocator: std.mem.Allocator) !Data {
     // TODO: TLS (Thread Local Storage)
 
     var data = Data{
@@ -324,12 +324,17 @@ pub fn parse(oelf: []const u8, allocator: std.mem.Allocator) !Data {
         data.plt_rela_entries = sliceCast(elf.Elf64_Rela, oelf, dynlib_data_offset.? + plt_rela_table_offset.?, plt_rela_table_size.? / @sizeOf(elf.Elf64_Rela));
 
         if (num_needed_files > 0) data.needed_files = try allocator.alloc([]const u8, num_needed_files);
+        errdefer if (data.needed_files) |files| allocator.free(files);
 
         if (num_export_modules > 0) data.export_modules = try allocator.alloc(ModuleReference, num_export_modules);
         if (num_import_modules > 0) data.import_modules = try allocator.alloc(ModuleReference, num_import_modules);
+        errdefer if (data.export_modules) |modules| allocator.free(modules);
+        errdefer if (data.import_modules) |modules| allocator.free(modules);
 
         if (num_export_libraries > 0) data.export_libraries = try allocator.alloc(LibraryReference, num_export_libraries);
         if (num_import_libraries > 0) data.import_libraries = try allocator.alloc(LibraryReference, num_import_libraries);
+        errdefer if (data.export_libraries) |libraries| allocator.free(libraries);
+        errdefer if (data.import_libraries) |libraries| allocator.free(libraries);
     }
 
     // Parse the rest of the Dynamic Entries.

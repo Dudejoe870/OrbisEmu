@@ -21,6 +21,7 @@ const root = @import("root");
 const stream_util = root.stream_util;
 
 const elf = std.elf;
+const oelf = @import("oelf.zig");
 
 pub const CommonHeader = extern struct {
     magic: [4]u8,
@@ -54,7 +55,7 @@ pub const ParseError = error{
 pub const SELF_MAGIC = [4]u8{ 79, 21, 61, 29 };
 
 /// Parses the SELF and returns the reconstructed OELF.
-pub fn toOElf(stream: anytype, allocator: std.mem.Allocator) ![]u8 {
+pub fn toOElf(stream: anytype, allocator: std.mem.Allocator) ![]align(@alignOf(oelf.Header)) u8 {
     const StreamType = @TypeOf(stream);
 
     comptime {
@@ -62,8 +63,7 @@ pub fn toOElf(stream: anytype, allocator: std.mem.Allocator) ![]u8 {
         std.debug.assert(@hasDecl(StreamType, "reader"));
     }
 
-    try stream.seekableStream().seekTo(try stream.seekableStream().getEndPos());
-    const self_size = try stream.seekableStream().getPos();
+    const self_size = try stream.seekableStream().getEndPos();
     try stream.seekableStream().seekTo(0);
 
     const common_header = try stream.reader().readStruct(CommonHeader);
@@ -96,7 +96,7 @@ pub fn toOElf(stream: anytype, allocator: std.mem.Allocator) ![]u8 {
     }
     min_offset = @min(min_offset, @max(self_size, elf_offset) - elf_offset);
 
-    var elf_data: []u8 = try allocator.alloc(u8, elf_size);
+    var elf_data: []align(@alignOf(oelf.Header)) u8 = try allocator.alignedAlloc(u8, @alignOf(oelf.Header), elf_size);
     errdefer allocator.free(elf_data);
 
     try stream.seekableStream().seekTo(elf_offset);
