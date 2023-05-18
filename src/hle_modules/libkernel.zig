@@ -34,9 +34,10 @@ pub const libkernel = struct {
             "sceKernelGetFsSandboxRandomWord",
             "scePthreadEqual",
         },
+        .low_priority = .{},
     };
 
-    pub fn sceKernelIsNeoMode() callconv(.SysV) c_int {
+    pub fn sceKernelIsNeoMode() callconv(.SysV) i32 {
         return 1;
     }
 };

@@ -65,7 +65,7 @@ pub fn loadAllDependencies() !void {
         var node_allocator = std.heap.ArenaAllocator.init(getTempAllocator());
         defer node_allocator.deinit();
 
-        var stack = std.SinglyLinkedList([]const u8) { };
+        var stack = std.SinglyLinkedList([]const u8){};
 
         var already_loaded = std.StringHashMap(void).init(getTempAllocator());
         defer already_loaded.deinit();
@@ -109,6 +109,11 @@ pub fn registerGlobalLleSymbols() !void {
     try registerLleSymbolsForBinding(elf.STB_GLOBAL);
 }
 
+fn hleStub() callconv(.SysV) void {
+    // TODO: Generate stubs for each non-loaded function and make it log the symbol name.
+    std.debug.panic("HLE Function not implemented!", .{});
+}
+
 fn registerLleSymbolsForBinding(comptime binding: comptime_int) !void {
     for (loaded_modules.items) |module| {
         for (module.raw_symbols) |sym| {
@@ -120,6 +125,7 @@ fn registerLleSymbolsForBinding(comptime binding: comptime_int) !void {
                     var library_name: []const u8 = undefined;
                     sym_name = try nid_util.reconstructFullNid(&module, sym.name, &symbol_name, &module_name, &library_name, memory_pool.allocator());
                     if (!hle_module_loader.shouldLoadLleSymbol(symbol_name, module_name, library_name)) {
+                        try symbol_manager.registerSymbol(sym_name, @ptrCast(*const anyopaque, &hleStub));
                         continue;
                     }
                 }
@@ -129,6 +135,7 @@ fn registerLleSymbolsForBinding(comptime binding: comptime_int) !void {
     }
 }
 
+// TODO: Linking
 /// Links all loaded Modules together via the global Symbol table
 pub fn linkModules() !void {}
 
@@ -175,13 +182,13 @@ fn searchDirectoryForModule(name: []const u8, path: []const u8, allocator: std.m
         else => return e,
     };
     defer dir.close();
-    
+
     var dir_iter = dir.iterate();
     while (try dir_iter.next()) |entry| {
         if (entry.kind == .File) {
             const name_no_ext = std.fs.path.stem(name);
             if (std.mem.eql(u8, name_no_ext, std.fs.path.stem(entry.name))) {
-                return try std.fs.path.join(allocator, &[_][]const u8 { path, entry.name });
+                return try std.fs.path.join(allocator, &[_][]const u8{ path, entry.name });
             }
         }
     }

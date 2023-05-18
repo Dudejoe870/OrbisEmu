@@ -18,10 +18,10 @@
 
 const std = @import("std");
 
-var symbol_map: std.StringHashMap(*anyopaque) = undefined;
+var symbol_map: std.StringHashMap(*const anyopaque) = undefined;
 
 pub fn init(allocator: std.mem.Allocator) void {
-    symbol_map = std.StringHashMap(*anyopaque).init(allocator);
+    symbol_map = std.StringHashMap(*const anyopaque).init(allocator);
 }
 
 pub fn deinit() void {
@@ -32,11 +32,11 @@ pub fn getSymbolAmount() usize {
     return symbol_map.unmanaged.size;
 }
 
-pub fn getSymbolAddress(name: []const u8) ?*anyopaque {
+pub fn getSymbolAddress(name: []const u8) ?*const anyopaque {
     return symbol_map.get(name);
 }
 
 /// Name must not go out of scope until deinitialization, caller is responsible for the name key memory.
-pub fn registerSymbol(name: []const u8, address: *anyopaque) !void {
+pub fn registerSymbol(name: []const u8, address: *const anyopaque) !void {
     try symbol_map.put(name, address);
 }

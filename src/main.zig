@@ -100,17 +100,17 @@ pub fn main() !u8 {
 
             eboot_directory_path = try default_allocator.dupe(u8, std.fs.path.dirname(path).?);
             defer default_allocator.free(eboot_directory_path);
-            
-            sce_module_eboot_directory_path = try std.fs.path.join(default_allocator, &[_][]const u8 { eboot_directory_path, "sce_module" });
+
+            sce_module_eboot_directory_path = try std.fs.path.join(default_allocator, &[_][]const u8{ eboot_directory_path, "sce_module" });
             defer default_allocator.free(sce_module_eboot_directory_path);
 
             exe_path = try std.fs.selfExeDirPathAlloc(default_allocator);
             defer default_allocator.free(exe_path);
 
-            system_common_exe_directory_path = try std.fs.path.join(default_allocator, &[_][]const u8 { exe_path, "system/common/lib" });
+            system_common_exe_directory_path = try std.fs.path.join(default_allocator, &[_][]const u8{ exe_path, "system/common/lib" });
             defer default_allocator.free(system_common_exe_directory_path);
 
-            system_priv_exe_directory_path = try std.fs.path.join(default_allocator, &[_][]const u8 { exe_path, "system/priv/lib" });
+            system_priv_exe_directory_path = try std.fs.path.join(default_allocator, &[_][]const u8{ exe_path, "system/priv/lib" });
             defer default_allocator.free(system_priv_exe_directory_path);
 
             try nid_table.init(default_allocator);
