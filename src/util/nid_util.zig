@@ -19,8 +19,9 @@
 const std = @import("std");
 const root = @import("root");
 
+const LleModule = root.LleModule;
+
 const nid_table = root.nid_table;
-const lle_module_loader = root.lle_module_loader;
 
 pub fn isEncodedSymbol(symbol: []const u8) bool {
     return symbol.len == 15 and symbol[11] == '#' and symbol[13] == '#';
@@ -31,7 +32,7 @@ pub const ReconstructNidError = error{
 };
 
 /// Caller is responsible for allocated memory.
-pub fn reconstructFullNid(encoded_nid: []const u8, out_symbol_name: ?*[]const u8, out_module_name: ?*[]const u8, out_library_name: ?*[]const u8, allocator: std.mem.Allocator) ![]const u8 {
+pub fn reconstructFullNid(module: *const LleModule, encoded_nid: []const u8, out_symbol_name: ?*[]const u8, out_module_name: ?*[]const u8, out_library_name: ?*[]const u8, allocator: std.mem.Allocator) ![]const u8 {
     var nid_components: [3][]const u8 = undefined;
 
     var encoded_nid_iter = std.mem.split(u8, encoded_nid, "#");
@@ -46,13 +47,13 @@ pub fn reconstructFullNid(encoded_nid: []const u8, out_symbol_name: ?*[]const u8
 
     const decoded_module_id = @truncate(u16, try decodeValue(nid_components[1]));
     var module_name = nid_components[1];
-    if (lle_module_loader.getModuleNameFromId(decoded_module_id)) |name| {
+    if (module.module_id_to_name.get(decoded_module_id)) |name| {
         module_name = name;
     }
 
     const decoded_library_id = @truncate(u16, try decodeValue(nid_components[2]));
     var library_name = nid_components[2];
-    if (lle_module_loader.getLibraryNameFromId(decoded_library_id)) |name| {
+    if (module.library_id_to_name.get(decoded_library_id)) |name| {
         library_name = name;
     }
 

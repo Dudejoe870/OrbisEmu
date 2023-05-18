@@ -29,7 +29,6 @@ pub const RawSymbolInfo = struct {
     address: ?*anyopaque,
 };
 
-id: u16 = 0,
 name: []const u8 = undefined,
 
 export_name: []const u8 = undefined,
@@ -44,6 +43,9 @@ relro_section: []u8 = undefined,
 init_proc: ?*const fn (argc: usize, argv: ?[*]?[*:0]u8, ?*const fn (argc: usize, argv: ?[*]?[*:0]u8) callconv(.SysV) c_int) callconv(.SysV) c_int = null,
 entry_point: ?*const fn (arg: ?*anyopaque, exit_function: ?*const fn () callconv(.SysV) void) callconv(.SysV) ?*anyopaque = null,
 proc_param: ?*anyopaque = null,
+
+module_id_to_name: std.AutoHashMap(u16, []const u8) = undefined,
+library_id_to_name: std.AutoHashMap(u16, []const u8) = undefined,
 
 raw_symbols: []const RawSymbolInfo = undefined,
 local_symbol_table: std.StringHashMap(?*anyopaque) = undefined,

@@ -56,7 +56,7 @@ pub fn build(b: *std.Build) void {
     const generate_sources = b.addWriteFiles();
     generate_sources.addCopyFileToSource(nid_table_source, "src/nid_table.zig");
 
-    const generate_sources_step = b.step("generate-sources", "Generates all generated source-code.");
+    const generate_sources_step = b.step("generate-sources", "Generates all generated source-code");
     generate_sources_step.dependOn(&generate_sources.step);
 
     const exe = b.addExecutable(.{

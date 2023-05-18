@@ -61,8 +61,8 @@ pub var eboot_module: *const LleModule = undefined;
 /// Game Directory Path
 pub var eboot_directory_path: []const u8 = undefined;
 
-/// eboot_dir/sce_modules
-pub var sce_modules_eboot_directory_path: []const u8 = undefined;
+/// eboot_dir/sce_module
+pub var sce_module_eboot_directory_path: []const u8 = undefined;
 
 /// Emulator EXE Path
 pub var exe_path: []const u8 = undefined;
@@ -101,8 +101,8 @@ pub fn main() !u8 {
             eboot_directory_path = try default_allocator.dupe(u8, std.fs.path.dirname(path).?);
             defer default_allocator.free(eboot_directory_path);
             
-            sce_modules_eboot_directory_path = try std.fs.path.join(default_allocator, &[_][]const u8 { eboot_directory_path, "sce_modules" });
-            defer default_allocator.free(sce_modules_eboot_directory_path);
+            sce_module_eboot_directory_path = try std.fs.path.join(default_allocator, &[_][]const u8 { eboot_directory_path, "sce_module" });
+            defer default_allocator.free(sce_module_eboot_directory_path);
 
             exe_path = try std.fs.selfExeDirPathAlloc(default_allocator);
             defer default_allocator.free(exe_path);

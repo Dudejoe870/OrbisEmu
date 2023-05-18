@@ -41,6 +41,8 @@ pub const LoadError = error{
     MoreThanOneCodeSection,
     MoreThanOneDataSection,
     MoreThanOneRelroSection,
+
+    ImportModuleIdNotDefined,
 };
 
 var memory_pool: std.heap.ArenaAllocator = undefined;
@@ -51,17 +53,11 @@ inline fn getTempAllocator() std.mem.Allocator {
 var loaded_modules: std.ArrayList(LleModule) = undefined;
 var module_name_to_index: std.StringHashMap(usize) = undefined;
 
-var module_id_to_name: std.AutoHashMap(u16, []const u8) = undefined;
-var library_id_to_name: std.AutoHashMap(u16, []const u8) = undefined;
-
 pub fn init(allocator: std.mem.Allocator) void {
     memory_pool = std.heap.ArenaAllocator.init(allocator);
 
     loaded_modules = std.ArrayList(LleModule).init(memory_pool.allocator());
     module_name_to_index = std.StringHashMap(usize).init(memory_pool.allocator());
-
-    module_id_to_name = std.AutoHashMap(u16, []const u8).init(memory_pool.allocator());
-    library_id_to_name = std.AutoHashMap(u16, []const u8).init(memory_pool.allocator());
 }
 
 pub fn loadAllDependencies() !void {
@@ -91,12 +87,7 @@ pub fn loadAllDependencies() !void {
                 continue;
             }
 
-            const module = loadFile(full_dependency_path) catch |e| switch (e) {
-                error.FileNotFound => {
-                    continue;
-                },
-                else => return e,
-            };
+            const module = try loadFile(full_dependency_path);
 
             if (module.dependencies) |dependencies| {
                 for (dependencies) |name| {
@@ -127,7 +118,7 @@ fn registerLleSymbolsForBinding(comptime binding: comptime_int) !void {
                     var symbol_name: []const u8 = undefined;
                     var module_name: []const u8 = undefined;
                     var library_name: []const u8 = undefined;
-                    sym_name = try nid_util.reconstructFullNid(sym.name, &symbol_name, &module_name, &library_name, memory_pool.allocator());
+                    sym_name = try nid_util.reconstructFullNid(&module, sym.name, &symbol_name, &module_name, &library_name, memory_pool.allocator());
                     if (!hle_module_loader.shouldLoadLleSymbol(symbol_name, module_name, library_name)) {
                         continue;
                     }
@@ -143,7 +134,7 @@ pub fn linkModules() !void {}
 
 pub fn deinit() void {
     for (loaded_modules.items) |*module| {
-        std.log.info("Unloading module \"{s}\" (export_name: \"{s}\", id: 0x{x}, is_lib: {any})", .{ module.name, module.export_name, module.id, module.is_lib });
+        std.log.info("Unloading module \"{s}\" (export_name: \"{s}\", is_lib: {any})", .{ module.name, module.export_name, module.is_lib });
         page_util.free(module.data);
     }
     memory_pool.deinit();
@@ -164,17 +155,9 @@ pub fn getModuleFromName(name: []const u8) ?*const LleModule {
     return null;
 }
 
-pub fn getModuleNameFromId(id: u16) ?[]const u8 {
-    return module_id_to_name.get(id);
-}
-
-pub fn getLibraryNameFromId(id: u16) ?[]const u8 {
-    return library_id_to_name.get(id);
-}
-
 /// Caller is responsible for allocated memory.
 pub fn searchForModuleFile(name: []const u8, allocator: std.mem.Allocator) ![]const u8 {
-    if (try searchDirectoryForModule(name, root.sce_modules_eboot_directory_path, allocator)) |path| {
+    if (try searchDirectoryForModule(name, root.sce_module_eboot_directory_path, allocator)) |path| {
         return path;
     }
     if (try searchDirectoryForModule(name, root.system_common_exe_directory_path, allocator)) |path| {
@@ -209,7 +192,7 @@ fn searchDirectoryForModule(name: []const u8, path: []const u8, allocator: std.m
 pub fn loadFile(path: []const u8) !*const LleModule {
     var file = std.fs.cwd().openFile(path, .{ .mode = .read_only }) catch |e| switch (e) {
         error.FileNotFound => {
-            std.log.warn("Couldn't load Module \"{s}\"", .{path});
+            std.log.err("Couldn't load Module \"{s}\", please make sure you have the PS4 firmware system directory inside the directory with the executable.", .{path});
             return e;
         },
         else => return e,
@@ -257,16 +240,16 @@ pub fn load(stream: anytype, name: []const u8) !*const LleModule {
 
         var oelf_data: []align(@alignOf(oelf.Header)) u8 = undefined;
         if (std.mem.eql(u8, &magic, &ps4_self.SELF_MAGIC)) {
-            oelf_data = try ps4_self.toOElf(stream, memory_pool.allocator());
+            oelf_data = try ps4_self.toOElf(stream, getTempAllocator());
         } else if (std.mem.eql(u8, &magic, &oelf.ELF_MAGIC)) {
             const file_size = try stream.seekableStream().getEndPos();
-            oelf_data = try memory_pool.allocator().alignedAlloc(u8, @alignOf(oelf.Header), file_size);
+            oelf_data = try getTempAllocator().alignedAlloc(u8, @alignOf(oelf.Header), file_size);
             try stream.reader().readNoEof(oelf_data);
         } else {
             return LoadError.InvalidSelfOrOElf;
         }
 
-        elf_data = try oelf.parse(oelf_data, memory_pool.allocator());
+        elf_data = try oelf.parse(oelf_data, getTempAllocator());
     }
     defer elf_data.deinit();
     if (elf_data.mapped_size == 0) return LoadError.NothingToLoad;
@@ -276,8 +259,6 @@ pub fn load(stream: anytype, name: []const u8) !*const LleModule {
 
     // Map executable pages into memory
     mod.data = try page_util.alloc(elf_data.mapped_size, .{ .read = true, .write = true, .execute = true });
-
-    mod.id = elf_data.export_modules.?[0].value.bits.id;
 
     // Find addresses of the init function, the process parameter data, and the entry point function
     if (elf_data.init_proc_offset) |offset| {
@@ -334,15 +315,6 @@ pub fn load(stream: anytype, name: []const u8) !*const LleModule {
     mod.name = try memory_pool.allocator().dupe(u8, name);
     try module_name_to_index.put(mod.name, module_index);
 
-    if (elf_data.export_libraries) |libraries| {
-        mod.library_names = try memory_pool.allocator().alloc([]const u8, libraries.len);
-        for (libraries, 0..) |mod_library, i| {
-            mod.library_names.?[i] = try memory_pool.allocator().dupe(u8, mod_library.name);
-            try library_id_to_name.put(mod_library.value.bits.id, mod.library_names.?[i]);
-        }
-    }
-    try module_id_to_name.put(mod.id, mod.name);
-
     // Copy symbol data
     mod.local_symbol_table = std.StringHashMap(?*anyopaque).init(memory_pool.allocator());
 
@@ -361,14 +333,6 @@ pub fn load(stream: anytype, name: []const u8) !*const LleModule {
 
         if (sym.binding == elf.STB_LOCAL) try mod.local_symbol_table.put(sym.name, sym.address);
     }
-    std.log.info("Loaded module \"{s}\" (export_name: \"{s}\", id: 0x{x}, {d} bytes, is_lib: {any}, amount of local symbols: {d})", .{
-        mod.name,
-        mod.export_name,
-        mod.id,
-        mod.data.len,
-        mod.is_lib,
-        mod.local_symbol_table.unmanaged.size,
-    });
 
     if (elf_data.needed_files) |needed| {
         mod.dependencies = try memory_pool.allocator().alloc([]const u8, needed.len);
@@ -377,5 +341,30 @@ pub fn load(stream: anytype, name: []const u8) !*const LleModule {
         }
     }
 
+    mod.module_id_to_name = std.AutoHashMap(u16, []const u8).init(memory_pool.allocator());
+    mod.library_id_to_name = std.AutoHashMap(u16, []const u8).init(memory_pool.allocator());
+
+    if (elf_data.import_modules) |import| {
+        for (import) |ref| {
+            if (ref.value.bits.id == 0) {
+                return LoadError.ImportModuleIdNotDefined;
+            }
+            try mod.module_id_to_name.put(ref.value.bits.id, try memory_pool.allocator().dupe(u8, ref.name));
+        }
+    }
+
+    if (elf_data.import_libraries) |import| {
+        for (import) |ref| {
+            try mod.library_id_to_name.put(ref.value.bits.id, try memory_pool.allocator().dupe(u8, ref.name));
+        }
+    }
+
+    std.log.info("Loaded module \"{s}\" (export_name: \"{s}\", {d} bytes, is_lib: {any}, local symbols: {d})", .{
+        mod.name,
+        mod.export_name,
+        mod.data.len,
+        mod.is_lib,
+        mod.local_symbol_table.unmanaged.size,
+    });
     return mod;
 }
